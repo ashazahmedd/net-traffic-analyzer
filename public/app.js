@@ -1,11 +1,13 @@
 const $ = id => document.getElementById(id);
-const colors = ['#a7cf78', '#9db7cf', '#c4aed4', '#e1c28e', '#c6d0bd'];
+const colors = ['#38bdf8', '#34d399', '#a78bfa', '#fbbf24', '#64748b'];
 const fmt = n => n.toLocaleString();
 const bytes = n => n >= 1e6 ? (n / 1e6).toFixed(2) + ' MB' : n >= 1e3 ? (n / 1e3).toFixed(1) + ' KB' : n + ' B';
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
 let report = null, page = 0, busy = false, name = '', selectedFile = null, selectedSample = false;
 let charts = [];
 let streamPage = 0;
+let importRecords = [];
+let dragDepth = 0;
 
 function updateControls() {
   $('upload').disabled = busy || !selectedFile;
@@ -15,6 +17,10 @@ function updateControls() {
   $('file').disabled = busy;
   $('export').disabled = busy || !report;
   $('drop').setAttribute('aria-busy', String(busy));
+  $('analysis-progress').hidden = !busy;
+  $('stats').classList.toggle('is-loading',busy);
+  document.querySelectorAll('[data-history-restore],[data-history-delete]').forEach(button=>button.disabled=busy);
+  $('clear-history').disabled=busy || !importRecords.length;
 }
 
 function selectFile(file, sample = false) {
@@ -25,6 +31,10 @@ function selectFile(file, sample = false) {
     file.size > 4000000 ? 'This demo supports captures up to 4 MB.' :
     file.size === 0 ? 'This file is empty. Choose a packet capture.' : '';
   $('message').textContent = error;
+  $('drop').classList.toggle('invalid',!!error);
+  $('validation-state').parentElement.className='file-validation '+(error?'invalid':'valid');
+  $('validation-state').textContent=error || `✓ Format accepted · ${bytes(file.size)} / 4 MB`;
+  $('file-meter').style.width=Math.min(100,file.size/4000000*100)+'%';
   $('selected-file').textContent = error ? 'Choose a capture to analyze.' : `${file.name} · ${bytes(file.size)} · Ready to analyze`;
   if (!error) { selectedFile = file; selectedSample = sample; }
   $('file').value = '';
@@ -41,15 +51,15 @@ function renderCharts(protocols) {
   }
   charts.push(new Chart($('protocol-chart'), {
     type: 'doughnut',
-    data: {labels: protocols.map(([p]) => p), datasets: [{data: protocols.map(([,n]) => n), backgroundColor: protocols.map((_,i) => colors[i % colors.length]), borderWidth: 2}]},
+    data: {labels: protocols.map(([p]) => p), datasets: [{data: protocols.map(([,n]) => n), backgroundColor: protocols.map((_,i) => colors[i % colors.length]), borderColor: '#101b2a', borderWidth: 3}]},
     options: {responsive: true, maintainAspectRatio: false, animation: false, cutout: '70%', plugins: {legend: {display: false}}}
   }));
   charts.push(new Chart($('port-chart'), {
     type: 'bar',
-    data: {labels: report.topPorts.map(p => String(p.port)), datasets: [{label: 'Packets', data: report.topPorts.map(p => p.count), backgroundColor: '#a7cf78', borderRadius: 4, maxBarThickness: 42}]},
+    data: {labels: report.topPorts.map(p => String(p.port)), datasets: [{label: 'Packets', data: report.topPorts.map(p => p.count), backgroundColor: '#38bdf8', borderRadius: 4, maxBarThickness: 42}]},
     options: {responsive: true, maintainAspectRatio: false, animation: false, plugins: {legend: {display: false}},
-      scales: {x: {title: {display: true, text: 'Destination port', color: '#87927f', font: {size: 10}}, grid: {display: false}, ticks: {color: '#87927f', font: {size: 10}}},
-        y: {beginAtZero: true, grid: {color: '#edf0e8'}, ticks: {precision: 0, color: '#87927f', font: {size: 10}}}}}
+      scales: {x: {title: {display: true, text: 'Destination port', color: '#6687a3', font: {size: 10}}, grid: {display: false}, ticks: {color: '#6687a3', font: {size: 10}}},
+        y: {beginAtZero: true, grid: {color: '#ffffff09'}, ticks: {precision: 0, color: '#6687a3', font: {size: 10}}}}}
   }));
 }
 
@@ -63,7 +73,7 @@ function render() {
   ].map(([label,value,note,icon]) => `<div class="stat"><div class="stat-label">${label}<span class="stat-icon" aria-hidden="true">${icon}</span></div><strong>${value}</strong><small><span>●</span> &nbsp;${note}</small></div>`).join('');
   $('protocol-count').textContent = protocols.length;
   $('legend').innerHTML = protocols.map(([p,n],i) => `<div class="legend-item"><i style="background:${colors[i % colors.length]}"></i><span>${esc(p)}</span><b>${(n / (report.count || 1) * 100).toFixed(1)}%</b></div>`).join('') || '<p>No packets in capture.</p>';
-  renderCharts(protocols);
+  if (!$('workspace').hidden) renderCharts(protocols);
   $('protocol').innerHTML = '<option value="">All protocols</option>' + protocols.map(([p]) => `<option>${esc(p)}</option>`).join('');
   $('filename').textContent = name;
   $('capture-meta').textContent = `${fmt(report.count)} packets · ${bytes(report.bytes)} · ${report.duration.toFixed(2)} s`;
@@ -120,10 +130,11 @@ function table() {
   const pages = Math.max(1, Math.ceil(filtered.length / 8));
   page = Math.min(page, pages - 1);
   $('thead').innerHTML = '<tr>' + ['Index', 'Protocol', 'Source IP', 'Destination IP', 'Port', 'Size'].map(t => `<th scope="col">${t}</th>`).join('') + '</tr>';
-  $('rows').innerHTML = filtered.slice(page * 8, page * 8 + 8).map(p => '<tr>' + [
-    p.number, `<span class="tag ${esc(p.protocol)}">${esc(p.protocol)}</span>`, esc(p.source), esc(p.destination),
+  $('rows').innerHTML = filtered.slice(page * 8, page * 8 + 8).map(p => `<tr class="packet-summary" data-packet-row="${p.number}">` + [
+    `<button class="packet-toggle" data-packet="${p.number}" aria-expanded="false" aria-controls="packet-detail-${p.number}">▸ #${p.number}</button>`,
+    `<span class="tag ${esc(p.protocol)}">${esc(p.protocol)}</span>`, esc(p.source), esc(p.destination),
     p.destinationPort || '—', bytes(p.length)
-  ].map(v => `<td>${v}</td>`).join('') + '</tr>').join('') || '<tr><td colspan="6">No matching packets.</td></tr>';
+  ].map(v => `<td>${v}</td>`).join('') + `</tr><tr id="packet-detail-${p.number}" hidden><td colspan="6" class="packet-detail">${payloadDrawer(p)}</td></tr>`).join('') || '<tr><td colspan="6">No matching packets.</td></tr>';
   $('shown').textContent = fmt(filtered.length) + ' PACKETS';
   $('result-count').textContent = `Showing ${filtered.length ? page * 8 + 1 : 0}–${Math.min(page * 8 + 8, filtered.length)} of ${fmt(filtered.length)}${report.count > report.packets.length ? ' · first 1,500 packets indexed' : ''}`;
   $('page').textContent = `${page + 1} / ${pages}`;
@@ -147,6 +158,10 @@ async function analyzeSelected() {
     $('sample').hidden = !selectedSample;
     render();
     $('selected-file').textContent = `${name} · Analysis complete`;
+    if(!selectedSample) {
+      try {await CaptureHistory.save(selectedFile,report);await loadHistory();$('history-status').textContent='';}
+      catch(error) {$('history-status').textContent='Analysis complete, but history could not be saved. '+(error.message || 'Browser storage unavailable.');}
+    }
   } catch (error) {
     $('message').textContent = error.message || 'Analysis failed. Try another capture.';
   } finally {
@@ -178,15 +193,15 @@ $('browse').onclick = () => $('file').click();
 $('upload').onclick = analyzeSelected;
 $('file').onchange = event => { if (event.target.files[0]) selectFile(event.target.files[0]); };
 $('demo').onclick = demo;
-['dragenter', 'dragover'].forEach(type => $('drop').addEventListener(type, event => {
-  event.preventDefault();
-  if (!busy) $('drop').classList.add('drag');
-}));
-['dragleave', 'drop'].forEach(type => $('drop').addEventListener(type, event => {
-  event.preventDefault();
-  $('drop').classList.remove('drag');
-}));
-$('drop').addEventListener('drop', event => { if (event.dataTransfer.files[0]) selectFile(event.dataTransfer.files[0]); });
+$('drop').addEventListener('dragenter',event=>{event.preventDefault();dragDepth++;if(!busy)$('drop').classList.add('drag');});
+$('drop').addEventListener('dragover',event=>event.preventDefault());
+$('drop').addEventListener('dragleave',event=>{event.preventDefault();dragDepth=Math.max(0,dragDepth-1);if(!dragDepth)$('drop').classList.remove('drag');});
+$('drop').addEventListener('drop', event => {
+  event.preventDefault();dragDepth=0;$('drop').classList.remove('drag');
+  if(busy)return;
+  if(event.dataTransfer.files.length!==1){$('message').textContent='Choose one capture file at a time.';return;}
+  selectFile(event.dataTransfer.files[0]);
+});
 $('search').oninput = $('protocol').onchange = () => { page = 0; table(); };
 $('clear-filter').onclick = () => { $('search').value = ''; $('protocol').value = ''; page=0; table(); };
 $('prev').onclick = () => { page--; table(); };
@@ -210,5 +225,58 @@ $('streams').onclick = event => {
 };
 $('stream-prev').onclick = () => { streamPage--; renderStreams(); };
 $('stream-next').onclick = () => { streamPage++; renderStreams(); };
+function payloadDrawer(packet) {
+  const preview=report.payloadPreviews?.[String(packet.number)];
+  if(!preview)return '<p>Payload previews are not retained in import history. Reimport the original capture to inspect bytes.</p>';
+  if(!preview.previewLength)return `<p>No decoded TCP/UDP/ICMP payload in this packet. Captured frame: ${preview.capturedLength} bytes.</p>`;
+  const hex=preview.hex.split(' '),lines=[],ascii=[];
+  for(let i=0;i<hex.length;i+=16){lines.push(i.toString(16).padStart(4,'0')+'  '+hex.slice(i,i+16).join(' '));ascii.push(preview.ascii.slice(i,i+16));}
+  return `<p>Payload: ${preview.payloadLength} bytes · showing ${preview.previewLength}${preview.truncated?' (truncated at 128 bytes)':''} · captured frame: ${preview.capturedLength} bytes. Sensitive content may be visible in the preview.</p><div class="payload-grid"><div><h3>HEX / OFFSET</h3><pre>${esc(lines.join('\n'))}</pre></div><div><h3>ASCII / PRINTABLE</h3><pre class="ascii-preview">${esc(ascii.join('\n'))}</pre></div></div>`;
+}
+$('rows').onclick=event=>{
+  const row=event.target.closest('tr[data-packet-row]');if(!row)return;
+  const button=row.querySelector('button[data-packet]'),expanded=button.getAttribute('aria-expanded')==='true';
+  button.setAttribute('aria-expanded',String(!expanded));
+  button.textContent=(expanded?'▸ #':'▾ #')+button.dataset.packet;
+  $('packet-detail-'+button.dataset.packet).hidden=expanded;
+};
+async function loadHistory() {importRecords=await CaptureHistory.list();renderHistory();}
+function renderHistory() {
+  $('history-list').innerHTML=importRecords.length?importRecords.map(r=>`<div class="history-entry"><span class="terminal-blue" aria-hidden="true">◷</span><div><strong>${esc(r.name)}</strong><p>${esc(new Date(r.importedAt).toLocaleString())} · ${bytes(r.size)} · ${fmt(r.report.count)} packets · ${fmt(r.report.anomalyCount)} findings</p></div><button class="secondary" data-history-restore="${esc(r.id)}">Restore</button><button class="history-delete" data-history-delete="${esc(r.id)}" aria-label="Delete history for ${esc(r.name)}">Delete</button></div>`).join(''):'<div class="history-empty">Your analyzed imports will appear here. Try a PCAP or PCAPNG file to start.</div>';
+  updateControls();
+}
+$('history-list').onclick=async event=>{
+  if(busy)return;
+  const restore=event.target.closest('[data-history-restore]'),remove=event.target.closest('[data-history-delete]');
+  if(restore){
+    const record=importRecords.find(r=>r.id===restore.dataset.historyRestore);if(!record)return;
+    report=record.report;name=record.name;selectedFile=null;selectedSample=false;
+    $('sample').hidden=true;$('message').textContent='';
+    $('selected-file').textContent=`${name} · Restored from local history. Reimport for payload previews.`;
+    $('validation-state').textContent='Local report restored · choose a file for a new analysis';
+    $('drop').classList.remove('invalid');$('validation-state').parentElement.className='file-validation';
+    $('file-meter').style.width='0%';render();updateControls();$('title').scrollIntoView({block:'start'});
+  }
+  if(remove){try{await CaptureHistory.remove(remove.dataset.historyDelete);await loadHistory();}catch(error){$('history-status').textContent='Could not delete this report: '+error.message;}}
+};
+$('clear-history').onclick=async()=>{
+  if(busy||!importRecords.length||!confirm('Delete all saved import reports from this browser? Original capture files are not affected.'))return;
+  try{await CaptureHistory.clear();await loadHistory();$('history-status').textContent='Local history cleared.';}catch(error){$('history-status').textContent='Could not clear history: '+error.message;}
+};
+function showWelcome(){
+  $('workspace').hidden=true;$('welcome').hidden=false;
+  $('enter').focus();window.scrollTo(0,0);
+}
+$('enter').onclick=async()=>{
+  $('welcome').hidden=true;$('workspace').hidden=false;
+  $('title').setAttribute('tabindex','-1');$('title').focus();
+  if(report){renderCharts(Object.entries(report.protocols).sort((a,b)=>b[1]-a[1]));}
+  else {
+    $('stats').innerHTML=['Total Packets','Unique IPs','Detected Protocols','Average Packet Size'].map(label=>`<div class="stat"><div class="stat-label">${label}</div><strong>—</strong><small>Awaiting capture</small></div>`).join('');
+    await demo();
+  }
+};
+$('home').onclick=event=>{event.preventDefault();showWelcome();};
+window.addEventListener('pageshow',event=>{if(event.persisted)showWelcome();});
+loadHistory().catch(error=>{$('history-status').textContent='Import history is unavailable: '+error.message;});
 updateControls();
-demo();

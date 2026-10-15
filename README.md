@@ -1,12 +1,12 @@
 # net-traffic-analyzer · PacketPulse
 
-An offline packet-capture dashboard built with Python, Flask, Scapy, Pandas, Tailwind CSS, and Chart.js.
+An offline packet-capture dashboard built with Python, Flask, Scapy, Pandas, Tailwind CSS, and Chart.js, with a dark terminal-inspired interface.
 
 ## Problem Solved
 
 Network students and engineers often need a quick way to inspect packet behavior without configuring a live capture session or learning a full desktop analysis workflow. PacketPulse turns a pre-captured `.pcap` or `.pcapng` file into a readable traffic summary: which protocols appear, which IP addresses communicate, which ports receive traffic, and how packet sizes vary.
 
-Offline analysis avoids opening capture interfaces, requiring administrative/root privileges, or collecting unrelated live traffic. Users can practice with the included synthetic capture or review their own captures. Uploaded files are parsed in memory and never saved by the application.
+Offline analysis avoids opening capture interfaces, requiring administrative/root privileges, or collecting unrelated live traffic. Users can practice with the included synthetic capture or review their own captures. Uploaded capture files are parsed in memory and never saved by the backend. The browser keeps a bounded local history of analysis reports, excluding raw files and payload bytes.
 
 ## What Was Built
 
@@ -22,6 +22,8 @@ File picker / drag and drop → Analyze Traffic → POST /upload
 | --- | --- |
 | `app.py` | Exposes `app = Flask(__name__)`; handles multipart uploads, raw API requests, validation errors, and local static delivery. |
 | `capture_format.py` | Validates PCAP/PCAPNG record framing before dissection. |
+| `payloads.py` | Bounds hex/ASCII payload previews to 128 bytes for the first 1,500 packets. |
+| `public/history.js` | Persists analysis reports in browser IndexedDB after removing payload previews. |
 | `security.py` | Groups bidirectional TCP 4-tuples and evaluates passive scan/cleartext heuristics. |
 | `analyzer.py` | Uses Scapy for packet layers and Pandas for protocol, host, port, conversation, and size metrics. |
 | `public/` | HTML5/Tailwind CDN dashboard, custom theme, Chart.js, and the public demo capture. |
@@ -31,12 +33,16 @@ File picker / drag and drop → Analyze Traffic → POST /upload
 
 The dashboard provides:
 
-- Drag-and-drop/file selection followed by **Analyze Traffic**, plus **Try sample capture** for immediate results.
+- A welcome screen appears on every page load; **Enter workspace** opens the analyzer and **PacketPulse** returns to the welcome screen.
+- A dark slate/charcoal theme uses electric-blue and emerald accents, an original geometric bird mark, translucent cards, and subtle backdrop blur.
+- Animated drag-and-drop/file selection followed by **Analyze Traffic**, with format/size indicators, a spinner, indeterminate progress bar, and metric skeletons while processing. **Try sample capture** provides immediate results.
 - **Total Packets**, **Unique IPs**, **Detected Protocols**, and **Average Packet Size** summary cards.
 - Side-by-side protocol-distribution doughnut and top-destination-port bar charts, stacked on mobile.
 - A searchable, protocol-filtered, paginated packet table with Index, Protocol, Source IP, Destination IP, destination Port, and Size.
 - An **Anomalies Detected** card with expandable evidence and confidence labels.
 - An expandable **TCP Stream Breakdown** table showing endpoints, counts, flags, volume, timing, and packet metadata.
+- Expandable packet rows show bounded hex and printable ASCII payload previews for the currently analyzed capture.
+- Device-local import history restores previous reports without retaining capture files or payload bytes.
 - JSON export containing totals, active ports, size statistics, conversations, streams, anomalies, host rankings, and timeline bins.
 
 ### Safe sample capture
@@ -73,7 +79,7 @@ Scapy and Pandas increase dependency size and cold-start work. `requirements.txt
 | Observed cleartext HTTP | An HTTP/1 request line or status line at the start of a TCP packet payload, inspected within a 512-byte prefix on any port. One finding per stream with a matching-packet count. Port 80 alone does not trigger this finding. |
 | Possible cleartext Telnet | Payload traffic on TCP port 23 without a recognizable TLS record prefix. This is a low-confidence port-based inference, not confirmed Telnet or proof that the payload is unencrypted. SYN-only traffic is excluded. |
 
-Findings are heuristic indicators requiring review, not confirmed attacks. Capture coverage, split HTTP headers, encryption, evasive or slow scans, and nonstandard protocols can produce missed findings or false positives. Zero findings does not establish that traffic is secure. Payload contents and credentials are never included in findings, stream previews, or exported reports.
+Findings are heuristic indicators requiring review, not confirmed attacks. Capture coverage, split HTTP headers, encryption, evasive or slow scans, and nonstandard protocols can produce missed findings or false positives. Zero findings does not establish that traffic is secure. Security findings and TCP stream metadata never include payload contents or credentials. The separately requested packet hex/ASCII previews can contain sensitive payload bytes, and are included in exports of the currently analyzed capture. These bytes are omitted from persisted history reports and restored-report exports.
 
 The JSON response adds `anomalyCount`, `anomalies`, `streamCount`, `streams`, `securityLimits`, and `securityHeuristics`. Findings include type, confidence, evidence, endpoints, and a stream ID for cleartext findings. Totals cover all analyzed TCP rows; responses contain at most **100 findings**, the **50 TCP streams with most bytes**, and **eight packet-metadata previews per displayed stream**. A finding's stream may fall outside the top-50 detail list. The UI shows total counts and detail limits. Stream rows expand with directional counts, payload-packet counts, observed SYN/ACK/FIN/RST counts, relative first/last timestamps, and packet metadata. Flag counts include SYN-ACK packets in both SYN and ACK totals; there is no connection-success inference.
 
@@ -103,8 +109,24 @@ Filtering affects only the loaded packet table, up to the first 1,500 packet rec
 Run the dependency-free JavaScript filter tests with Node.js:
 
 ```sh
-node --test tests/test_filters.cjs
+node --test tests/test_filters.cjs tests/test_history.cjs
 ```
+
+### Welcome, loading feedback, and local import history
+
+Every page load starts at the welcome screen, including browser back/forward cache restores. There is no remembered skip flag or login requirement. Clicking **Enter workspace** opens the analyzer and loads the demo; clicking the workspace's PacketPulse logo returns to the welcome screen. Import history remains available after reload.
+
+Successful user imports are saved in **IndexedDB on the current browser and website origin**, with filename, file size, import timestamp, and analysis results. **Restore** opens a saved report; **Delete** removes one report; **Clear history** removes all saved reports in that browser. Raw PCAP/PCAPNG files and `payloadPreviews` are never written to history. The automatic demo is not saved as an import. Restoring a report explains that reimporting the original capture is required to inspect payload bytes.
+
+History is bounded to **20 reports and a 10 MB serialized-report budget**, removing the oldest reports when full. It does not sync between devices, browser profiles, or deployment domains, and may be removed by clearing site data or browser storage eviction. Unavailable/quota-limited browser storage shows a recoverable message without failing analysis. Browser records may contain network addresses and other analysis metadata, so the interface labels them as device-local.
+
+A spinner, moving indeterminate progress bar, and pulsing metric placeholders appear during sample fetching and backend parsing. They indicate activity rather than claiming a measured completion percentage. Upload controls are disabled during analysis. File validation shows accepted extensions, size versus the 4 MB limit, and errors; the dropzone highlights during file drag. Reduced-motion preferences disable animations.
+
+### Packet payload previews
+
+Click a packet row or its keyboard-accessible index button to expand a hex/ASCII drawer. For the first **1,500** packet rows, the server returns at most **128 bytes of decoded TCP/UDP/ICMP payload per packet**, with total payload length, preview length, captured-frame length, and a truncation indicator. Binary/non-printable bytes become dots in ASCII; hex retains their byte values. Headers are not presented as payload, and packets without a decoded payload show an empty-state message. There is no TCP reassembly or decryption.
+
+Previews are escaped when rendered, so text such as HTML/script fragments is displayed as data. These bytes are kept in the current in-memory analysis and exported JSON, but stripped before saving import history. The API response-size regression test checks the 1,500-packet/128-byte bounds against the serverless response limit. Restored reports retain metadata and metrics, with an explicit reimport prompt where payload previews would appear.
 
 ## Setup & Deployment
 
@@ -128,7 +150,7 @@ python -m pytest -q
 
 On Windows, activate with `.venv\Scripts\activate` instead. For runtime dependencies alone, install `requirements.txt`.
 
-The **21 Python tests** in `tests/` cover upload filename/content validation, missing/duplicate files, empty and oversized captures, in-memory streams, malformed binary records, PCAPNG byte orders, Scapy packet extraction, Pandas grouping, DNS, ports, size statistics, static assets, the safe sample fixture, TCP grouping, scan thresholds/time windows, cleartext evidence, and security response limits.
+The **25 Python tests** in `tests/` cover upload filename/content validation, missing/duplicate files, empty and oversized captures, in-memory streams, malformed binary records, PCAPNG byte orders, Scapy packet extraction, Pandas grouping, DNS, ports, size statistics, static assets, the safe sample fixture, TCP grouping, scan thresholds/time windows, cleartext evidence, and security response limits.
 
 ### 3. Test locally with Vercel
 
@@ -205,4 +227,4 @@ CDN-hosted styles, charts, and fonts require browser internet access. Packet con
 
 ### Verification status
 
-All 21 Python tests and 15 JavaScript filter tests pass locally. JavaScript syntax checks pass. Browser checks confirmed `ip.src == 198.51.100.1 and DNS` matches six sample packets, incomplete expressions show an error, and Clear filters restores all 120 rows. Earlier browser checks of the anomaly card and expandable stream table passed. A synthetic upload produced three findings (scan, HTTP, possible Telnet), and its HTTP stream expansion showed both directions correctly. Earlier browser checks covered charts, staged file selection, upload analysis, and packet search. Local Python tests used Python 3.9. `vercel dev`, the configured Python 3.12 deployment, and final hosted bundle size have not yet been verified.
+All 25 Python tests and 20 JavaScript filter/history tests pass locally. JavaScript syntax checks pass. Browser checks confirmed `ip.src == 198.51.100.1 and DNS` matches six sample packets, incomplete expressions show an error, and Clear filters restores all 120 rows. Earlier browser checks of the anomaly card and expandable stream table passed. A synthetic upload produced three findings (scan, HTTP, possible Telnet), and its HTTP stream expansion showed both directions correctly. Earlier browser checks covered charts, staged file selection, upload analysis, and packet search. Browser verification also confirmed welcome gating after reload, successful IndexedDB persistence and report restore, and live hex/ASCII packet expansion; restored reports contain no payload previews. Local Python tests used Python 3.9. `vercel dev`, the configured Python 3.12 deployment, and final hosted bundle size have not yet been verified.

@@ -54,7 +54,8 @@ def test_cleartext_evidence_deduplicates_without_exposing_payload():
     http=next(a for a in result['anomalies'] if a['type']=='cleartext_http')
     assert http['packetCount']==2 and http['confidence']=='high'
     assert next(s for s in result['streams'] if s['id']==http['streamId'])['anomalyIds']==[http['id']]
-    assert 'secret-token' not in str(result) and 'private-password' not in str(result)
+    assert 'secret-token' not in str(result['anomalies']) + str(result['streams'])
+    assert 'private-password' not in str(result['anomalies']) + str(result['streams'])
 
 
 def test_tls_on_telnet_port_not_flagged():
