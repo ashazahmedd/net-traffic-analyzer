@@ -22,6 +22,7 @@ File picker / drag and drop → Analyze Traffic → POST /upload
 | --- | --- |
 | `app.py` | Exposes `app = Flask(__name__)`; handles multipart uploads, raw API requests, validation errors, and local static delivery. |
 | `capture_format.py` | Validates PCAP/PCAPNG record framing before dissection. |
+| `security.py` | Groups bidirectional TCP 4-tuples and evaluates passive scan/cleartext heuristics. |
 | `analyzer.py` | Uses Scapy for packet layers and Pandas for protocol, host, port, conversation, and size metrics. |
 | `public/` | HTML5/Tailwind CDN dashboard, custom theme, Chart.js, and the public demo capture. |
 | `samples/` | Canonical safe sample capture and its offline generator. |
@@ -34,7 +35,9 @@ The dashboard provides:
 - **Total Packets**, **Unique IPs**, **Detected Protocols**, and **Average Packet Size** summary cards.
 - Side-by-side protocol-distribution doughnut and top-destination-port bar charts, stacked on mobile.
 - A searchable, protocol-filtered, paginated packet table with Index, Protocol, Source IP, Destination IP, destination Port, and Size.
-- JSON export containing totals, active ports, min/max/average packet sizes, host rankings, conversation metrics, and timeline bins.
+- An **Anomalies Detected** card with expandable evidence and confidence labels.
+- An expandable **TCP Stream Breakdown** table showing endpoints, counts, flags, volume, timing, and packet metadata.
+- JSON export containing totals, active ports, size statistics, conversations, streams, anomalies, host rankings, and timeline bins.
 
 ### Safe sample capture
 
@@ -60,6 +63,49 @@ Scapy and Pandas increase dependency size and cold-start work. `requirements.txt
 
 **Truncated captures must not look successful.** Scapy can finish reading some incomplete captures without reporting all framing issues. The binary validator runs first, and tests confirm malformed and truncated records return errors instead of partial success.
 
+### Security anomaly detection and TCP grouping
+
+`security.py` analyzes all decoded TCP packets in an accepted capture, including packets beyond the 1,500-row packet-table limit. A stream key is the unordered pair of `(IP, port)` endpoints: forward and reverse packets share a stream; different ports or hosts produce distinct streams. IPv4 and IPv6 are supported. This groups conversations, not TCP connection lifetimes: reusing the same 4-tuple merges those sessions. It does not reconstruct byte streams, reorder payloads, decrypt traffic, or infer missing packets.
+
+| Heuristic | Trigger and interpretation |
+| --- | --- |
+| Potential TCP port scan | Initial SYN packets (SYN set, ACK unset) from one source to at least 20 distinct destination ports on one host within a sliding 10-second window. Repeated SYNs to one port do not inflate the count. Capture timestamps are sorted before evaluation. One finding per source/destination pair; authorized scans can match. |
+| Observed cleartext HTTP | An HTTP/1 request line or status line at the start of a TCP packet payload, inspected within a 512-byte prefix on any port. One finding per stream with a matching-packet count. Port 80 alone does not trigger this finding. |
+| Possible cleartext Telnet | Payload traffic on TCP port 23 without a recognizable TLS record prefix. This is a low-confidence port-based inference, not confirmed Telnet or proof that the payload is unencrypted. SYN-only traffic is excluded. |
+
+Findings are heuristic indicators requiring review, not confirmed attacks. Capture coverage, split HTTP headers, encryption, evasive or slow scans, and nonstandard protocols can produce missed findings or false positives. Zero findings does not establish that traffic is secure. Payload contents and credentials are never included in findings, stream previews, or exported reports.
+
+The JSON response adds `anomalyCount`, `anomalies`, `streamCount`, `streams`, `securityLimits`, and `securityHeuristics`. Findings include type, confidence, evidence, endpoints, and a stream ID for cleartext findings. Totals cover all analyzed TCP rows; responses contain at most **100 findings**, the **50 TCP streams with most bytes**, and **eight packet-metadata previews per displayed stream**. A finding's stream may fall outside the top-50 detail list. The UI shows total counts and detail limits. Stream rows expand with directional counts, payload-packet counts, observed SYN/ACK/FIN/RST counts, relative first/last timestamps, and packet metadata. Flag counts include SYN-ACK packets in both SYN and ACK totals; there is no connection-success inference.
+
+### Advanced packet filtering
+
+The **Packet filter** above the packet table accepts a bounded simple query language evaluated in the browser. It does not execute query text as JavaScript or accept user-provided regular expressions.
+
+```text
+DNS
+HTTP
+ip.src == 192.168.1.5
+ip.dst == "2001:db8::2"
+port.dst == 5353
+TCP and size > 100
+(DNS or HTTP) and not UDP
+ip.src == 198.51.100.1 and port != 443
+```
+
+Supported fields are `ip.src`, `ip.dst`, `port`, `port.src`, `port.dst`, `tcp.srcport`, `tcp.dstport`, `udp.srcport`, `udp.dstport`, `protocol`, `size`, and `index`. Numeric fields accept `==`, `!=`, `>`, `>=`, `<`, and `<=`; IP and protocol fields accept equality/inequality. IP addresses match their displayed text exactly (case insensitive for IPv6). Ports must be integers between 0 and 65535. `port == 53` matches either endpoint; `port != 53` excludes packets with port 53 on either endpoint. Port filters apply only to decoded TCP/UDP packets.
+
+Bare protocol names and `protocol == DNS` match exact protocol categories, case insensitively. `TCP` and `UDP` additionally match underlying transport membership, so TCP includes HTTP and DNS-over-TCP. HTTP only matches packets with a recognized HTTP/1 start line, not all port-80 packets; split lines, HTTP/2, and encrypted HTTP are not classified.
+
+Combine predicates using `and`, `or`, `not` (also `&&`, `||`, `!`) and parentheses. Negation binds first, then `and`, then `or`. Filters are limited to 512 characters, 64 tokens, and 16 nested groups/negations. Invalid expressions show a validation message and no rows until corrected; **Clear filters** resets both query and dropdown. Plain text such as an IP address or `5353` still searches packet metadata by substring. This is not full BPF/Wireshark syntax; CIDR matching and capture filtering are not supported.
+
+Filtering affects only the loaded packet table, up to the first 1,500 packet records, and resets pagination. Summary cards, charts, security findings, stream totals, and JSON export continue to describe the full analysis. The UI discloses the packet-detail limit.
+
+Run the dependency-free JavaScript filter tests with Node.js:
+
+```sh
+node --test tests/test_filters.cjs
+```
+
 ## Setup & Deployment
 
 ### 1. Clone the GitHub repository
@@ -68,14 +114,6 @@ Scapy and Pandas increase dependency size and cold-start work. `requirements.txt
 git clone https://github.com/ashazahmedd/net-traffic-analyzer.git
 cd net-traffic-analyzer
 ```
-
-Until [PR #1](https://github.com/ashazahmedd/net-traffic-analyzer/pull/1) is merged, switch to its implementation branch before continuing:
-
-```sh
-git switch --track origin/codex/offline-traffic-analyzer
-```
-
-After the PR is merged, use `main` normally.
 
 ### 2. Install Python dependencies and run tests
 
@@ -90,7 +128,7 @@ python -m pytest -q
 
 On Windows, activate with `.venv\Scripts\activate` instead. For runtime dependencies alone, install `requirements.txt`.
 
-The **12 tests** in `tests/` cover upload filename/content validation, missing/duplicate files, empty and oversized captures, in-memory streams, malformed binary records, PCAPNG byte orders, Scapy packet extraction, Pandas grouping, DNS, ports, size statistics, static assets, and the safe sample fixture.
+The **21 Python tests** in `tests/` cover upload filename/content validation, missing/duplicate files, empty and oversized captures, in-memory streams, malformed binary records, PCAPNG byte orders, Scapy packet extraction, Pandas grouping, DNS, ports, size statistics, static assets, the safe sample fixture, TCP grouping, scan thresholds/time windows, cleartext evidence, and security response limits.
 
 ### 3. Test locally with Vercel
 
@@ -118,7 +156,7 @@ Open http://localhost:8000. The synthetic sample loads automatically; select ano
 1. In Vercel, choose **Add New → Project** and import [`ashazahmedd/net-traffic-analyzer`](https://github.com/ashazahmedd/net-traffic-analyzer).
 2. Use the repository root and the **Flask** framework preset. Leave the build command and output-directory overrides unset. No environment variables are required.
 3. Deploy. Vercel detects the root-level `app.py` WSGI instance, installs runtime dependencies, and serves `public/` assets from its CDN. `vercel.json` configures the function for 30 seconds and excludes development files. Flask handles `/`, `/upload`, and `/api/analyze` without legacy catch-all rewrites.
-4. Review the implementation branch's preview deployment, then merge PR #1 into `main`. Configure `main` as the project's production branch.
+4. Configure `main` as the production branch. Review feature-branch preview deployments before merging their pull requests into `main`.
 5. Subsequent commits pushed to `main` trigger production deployments; feature branches receive preview deployments through the GitHub integration.
 
 For example, from `main`, after committing a change:
@@ -161,10 +199,10 @@ curl -X POST http://localhost:8000/api/analyze \
 
 Classic PCAP supports both byte orders and microsecond/nanosecond timestamps. PCAPNG supports sections, interfaces, enhanced packet blocks, and timestamp resolution/offset options. Legacy/simple packet blocks return an explicit unsupported-format error.
 
-Protocol categories use Scapy's decoded DNS layer first, followed by transport/network layers. HTTP is not classified; encrypted payloads are not decrypted and streams are not reassembled. Packet volume and size statistics use original on-wire lengths from capture metadata. Host volume includes both endpoints, and conversations group unordered IP/port pairs plus protocol without TCP session tracking.
+Protocol categories use Scapy's decoded DNS layer first, followed by transport/network layers. HTTP/1 request/status lines observed in a TCP payload are labeled HTTP; port 80 alone does not establish HTTP. The added `transportProtocol` packet field preserves TCP/UDP membership when an application label such as DNS or HTTP is present; encrypted payloads are not decrypted and streams are not reassembled. Packet volume and size statistics use original on-wire lengths from capture metadata. Host volume includes both endpoints, and conversations group unordered IP/port pairs plus protocol without TCP session tracking.
 
 CDN-hosted styles, charts, and fonts require browser internet access. Packet contents go only to this application's analysis endpoint. Hosting-provider request-metadata logging is outside application control.
 
 ### Verification status
 
-All 12 tests pass locally. JavaScript syntax checks and browser checks of chart rendering, staged file selection, explicit upload analysis, and packet search passed. Local Python tests used Python 3.9. `vercel dev`, the configured Python 3.12 deployment, and final hosted bundle size have not yet been verified.
+All 21 Python tests and 15 JavaScript filter tests pass locally. JavaScript syntax checks pass. Browser checks confirmed `ip.src == 198.51.100.1 and DNS` matches six sample packets, incomplete expressions show an error, and Clear filters restores all 120 rows. Earlier browser checks of the anomaly card and expandable stream table passed. A synthetic upload produced three findings (scan, HTTP, possible Telnet), and its HTTP stream expansion showed both directions correctly. Earlier browser checks covered charts, staged file selection, upload analysis, and packet search. Local Python tests used Python 3.9. `vercel dev`, the configured Python 3.12 deployment, and final hosted bundle size have not yet been verified.

@@ -5,6 +5,7 @@ const bytes = n => n >= 1e6 ? (n / 1e6).toFixed(2) + ' MB' : n >= 1e3 ? (n / 1e3
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
 let report = null, page = 0, busy = false, name = '', selectedFile = null, selectedSample = false;
 let charts = [];
+let streamPage = 0;
 
 function updateControls() {
   $('upload').disabled = busy || !selectedFile;
@@ -68,14 +69,54 @@ function render() {
   $('capture-meta').textContent = `${fmt(report.count)} packets · ${bytes(report.bytes)} · ${report.duration.toFixed(2)} s`;
   $('search').value = '';
   page = 0;
+  streamPage = 0;
+  renderSecurity();
   table();
+}
+
+function renderSecurity() {
+  const count = report.anomalyCount;
+  $('anomaly-card').classList.toggle('has-findings', count > 0);
+  $('anomaly-card').innerHTML = `<div class="panel-title"><div><h2>Anomalies Detected <span class="finding-total">${fmt(count)}</span></h2><p>${count ? 'Potential issues to review; heuristic findings are not confirmed attacks.' : 'No configured heuristic matched. This does not establish that the capture is secure.'}</p></div><span class="pill">${count ? 'REVIEW' : 'NO MATCHES'}</span></div>
+    <div class="security-note">Scan rule: ${report.securityHeuristics.scanPortThreshold} distinct destination ports on one host within ${report.securityHeuristics.scanWindowSeconds}s. Cleartext checks: HTTP/1 signatures and possible Telnet on port 23.</div>
+    ${count ? `<details class="findings"><summary>Review ${fmt(report.anomalies.length)} findings${count > report.anomalies.length ? ' (details limited)' : ''}</summary><ul>${report.anomalies.map(a => `<li><strong>${esc(a.title)}</strong><span class="pill">${esc(a.confidence)} confidence</span><p>${esc(a.source)} → ${esc(a.destination)}${a.streamId ? ' · '+esc(a.streamId) : ''}</p><p>${esc(a.evidence)}</p></li>`).join('')}</ul></details>` : ''}`;
+  renderStreams();
+}
+
+function renderStreams() {
+  const pages = Math.max(1, Math.ceil(report.streams.length / 8));
+  streamPage = Math.min(streamPage, pages - 1);
+  $('stream-count').textContent = fmt(report.streamCount) + ' STREAMS';
+  $('streams').innerHTML = report.streams.slice(streamPage * 8, streamPage * 8 + 8).map(s => {
+    const endpoint = (ip, port) => `${esc(ip.includes(':') ? '['+ip+']' : ip)}:${port}`;
+    return `<tr><td><button class="stream-toggle secondary" data-stream="${esc(s.id)}" aria-expanded="false" aria-controls="detail-${esc(s.id)}">▸ ${esc(s.id)}</button>${s.anomalyIds.length ? '<span class="stream-warning">Review</span>' : ''}</td><td>${endpoint(s.source,s.sourcePort)} ↔ ${endpoint(s.destination,s.destinationPort)}</td><td>${fmt(s.packetCount)}</td><td>${bytes(s.bytes)}</td><td>${s.duration.toFixed(3)} s</td></tr>
+      <tr id="detail-${esc(s.id)}" hidden><td colspan="5" class="stream-detail"><div class="stream-metrics"><span>A → B: <b>${fmt(s.forwardPackets)} packets</b></span><span>B → A: <b>${fmt(s.reversePackets)} packets</b></span><span>Payload packets: <b>${fmt(s.payloadPackets)}</b></span><span>Flags: <b>${esc(Object.entries(s.flags).map(([flag,n])=>flag+' '+n).join(' · ') || 'None')}</b></span></div><p>First ${s.packets.length} packet records in capture order; metadata only. Timespan: ${s.start.toFixed(3)}–${s.end.toFixed(3)} s. Grouping does not reassemble payloads or separate reused TCP sessions.</p><table><thead><tr><th>Index</th><th>Source IP / port</th><th>Destination IP / port</th><th>Size</th></tr></thead><tbody>${s.packets.map(p=>`<tr><td>${p.number}</td><td>${endpoint(p.source,p.sourcePort)}</td><td>${endpoint(p.destination,p.destinationPort)}</td><td>${bytes(p.length)}</td></tr>`).join('')}</tbody></table></td></tr>`;
+  }).join('') || '<tr><td colspan="5">No decoded TCP conversations in this capture.</td></tr>';
+  $('stream-note').textContent = `Showing ${report.streams.length ? streamPage*8+1 : 0}–${Math.min(streamPage*8+8,report.streams.length)} of ${report.streams.length} detailed streams · ${fmt(report.streamCount)} total${report.streamCount > report.streams.length ? ' (top 50 by volume)' : ''}`;
+  $('stream-page').textContent = `${streamPage+1} / ${pages}`;
+  $('stream-prev').disabled = streamPage === 0;
+  $('stream-next').disabled = streamPage >= pages-1;
 }
 
 function table() {
   if (!report) return;
-  const query = $('search').value.trim().toLowerCase(), protocol = $('protocol').value;
-  const filtered = report.packets.filter(p => (!protocol || p.protocol === protocol) && (!query ||
-    [p.number, p.source, p.destination, p.sourcePort, p.destinationPort, p.protocol, p.length].join(' ').toLowerCase().includes(query)));
+  let predicate;
+  try {
+    predicate = PacketFilter.compile($('search').value);
+    $('filter-error').textContent = '';
+    $('search').setAttribute('aria-invalid','false');
+  } catch(error) {
+    $('filter-error').textContent = error.message;
+    $('search').setAttribute('aria-invalid','true');
+    $('rows').innerHTML = '<tr><td colspan="6">Fix the filter expression to see matching packets.</td></tr>';
+    $('shown').textContent = 'INVALID FILTER';
+    $('result-count').textContent = 'Filter could not be applied.';
+    $('page').textContent = '—';
+    $('prev').disabled = $('next').disabled = true;
+    return;
+  }
+  const protocol = $('protocol').value;
+  const filtered = report.packets.filter(p => (!protocol || PacketFilter.isProtocol(p,protocol)) && predicate(p));
   const pages = Math.max(1, Math.ceil(filtered.length / 8));
   page = Math.min(page, pages - 1);
   $('thead').innerHTML = '<tr>' + ['Index', 'Protocol', 'Source IP', 'Destination IP', 'Port', 'Size'].map(t => `<th scope="col">${t}</th>`).join('') + '</tr>';
@@ -147,6 +188,7 @@ $('demo').onclick = demo;
 }));
 $('drop').addEventListener('drop', event => { if (event.dataTransfer.files[0]) selectFile(event.dataTransfer.files[0]); });
 $('search').oninput = $('protocol').onchange = () => { page = 0; table(); };
+$('clear-filter').onclick = () => { $('search').value = ''; $('protocol').value = ''; page=0; table(); };
 $('prev').onclick = () => { page--; table(); };
 $('next').onclick = () => { page++; table(); };
 $('export').onclick = () => {
@@ -158,5 +200,15 @@ $('export').onclick = () => {
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
+$('streams').onclick = event => {
+  const button = event.target.closest('button[data-stream]');
+  if (!button) return;
+  const expanded = button.getAttribute('aria-expanded') === 'true';
+  button.setAttribute('aria-expanded', String(!expanded));
+  button.textContent = (expanded ? '▸ ' : '▾ ') + button.dataset.stream;
+  $('detail-' + button.dataset.stream).hidden = expanded;
+};
+$('stream-prev').onclick = () => { streamPage--; renderStreams(); };
+$('stream-next').onclick = () => { streamPage++; renderStreams(); };
 updateControls();
 demo();
