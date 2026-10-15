@@ -34,7 +34,12 @@ def analyze(data):
                 src, dst = (str(ip.src), str(ip.dst)) if ip else ('—', '—')
                 transport = packet.getlayer(TCP) or packet.getlayer(UDP)
                 sport, dport = (int(transport.sport), int(transport.dport)) if transport else (0, 0)
+                tcp = packet.getlayer(TCP)
+                payload = bytes(tcp.payload) if tcp else b''
+                signals = cleartext_signals(payload[:512], sport, dport) if tcp else []
+                transport_protocol = 'TCP' if tcp else 'UDP' if packet.haslayer(UDP) else ''
                 if packet.haslayer(DNS): protocol = 'DNS'
+                elif 'http' in signals: protocol = 'HTTP'
                 elif packet.haslayer(TCP): protocol = 'TCP'
                 elif packet.haslayer(UDP): protocol = 'UDP'
                 elif packet.haslayer(ICMP): protocol = 'ICMP'
@@ -45,17 +50,15 @@ def analyze(data):
                 else: protocol = 'Other'
                 rows.append(dict(number=i+1, time=ts, source=src, destination=dst,
                                  sourcePort=sport, destinationPort=dport,
-                                 protocol=protocol, length=size))
+                                 protocol=protocol, transportProtocol=transport_protocol, length=size))
                 if ip and packet.haslayer(TCP):
-                    tcp = packet[TCP]
-                    payload = bytes(tcp.payload)
                     tcp_rows.append(dict(rows[-1], tcpFlags=int(tcp.flags), payloadLength=len(payload),
-                                         cleartextSignals=cleartext_signals(payload[:512], sport, dport)))
+                                         cleartextSignals=signals))
     except (Scapy_Exception, EOFError, OSError, StructError) as exc:
         raise ValueError('Scapy could not read this capture. Check its format and integrity.') from exc
     if len(rows) != len(metadata):
         raise ValueError('Capture ended before all packet records were decoded.')
-    columns=['number','time','source','destination','sourcePort','destinationPort','protocol','length']
+    columns=['number','time','source','destination','sourcePort','destinationPort','protocol','transportProtocol','length']
     frame = pd.DataFrame(rows, columns=columns)
     if frame.empty:
         return dict(count=0, bytes=0, duration=0, hosts=0, protocols={}, timeline=[0]*40,

@@ -87,3 +87,10 @@ def test_upload_returns_security_schema():
         result=client.post('/upload',data={'file':(BytesIO(data),'http.pcap')})
         assert result.status_code==200
         assert result.json['anomalyCount']==1 and result.json['streamCount']==1
+
+def test_http_protocol_filter_metadata_preserves_tcp_transport():
+    result=analyze(capture([tcp(dport=8080,flags='PA',payload=b'GET / HTTP/1.1\r\n\r\n'),tcp(dport=80,flags='S')]))
+    assert result['protocols']=={'HTTP':1,'TCP':1}
+    assert result['packets'][0]['protocol']=='HTTP'
+    assert result['packets'][0]['transportProtocol']=='TCP'
+    assert result['packets'][1]['protocol']=='TCP'  # Port alone never labels HTTP.

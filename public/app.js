@@ -100,9 +100,23 @@ function renderStreams() {
 
 function table() {
   if (!report) return;
-  const query = $('search').value.trim().toLowerCase(), protocol = $('protocol').value;
-  const filtered = report.packets.filter(p => (!protocol || p.protocol === protocol) && (!query ||
-    [p.number, p.source, p.destination, p.sourcePort, p.destinationPort, p.protocol, p.length].join(' ').toLowerCase().includes(query)));
+  let predicate;
+  try {
+    predicate = PacketFilter.compile($('search').value);
+    $('filter-error').textContent = '';
+    $('search').setAttribute('aria-invalid','false');
+  } catch(error) {
+    $('filter-error').textContent = error.message;
+    $('search').setAttribute('aria-invalid','true');
+    $('rows').innerHTML = '<tr><td colspan="6">Fix the filter expression to see matching packets.</td></tr>';
+    $('shown').textContent = 'INVALID FILTER';
+    $('result-count').textContent = 'Filter could not be applied.';
+    $('page').textContent = '—';
+    $('prev').disabled = $('next').disabled = true;
+    return;
+  }
+  const protocol = $('protocol').value;
+  const filtered = report.packets.filter(p => (!protocol || PacketFilter.isProtocol(p,protocol)) && predicate(p));
   const pages = Math.max(1, Math.ceil(filtered.length / 8));
   page = Math.min(page, pages - 1);
   $('thead').innerHTML = '<tr>' + ['Index', 'Protocol', 'Source IP', 'Destination IP', 'Port', 'Size'].map(t => `<th scope="col">${t}</th>`).join('') + '</tr>';
@@ -174,6 +188,7 @@ $('demo').onclick = demo;
 }));
 $('drop').addEventListener('drop', event => { if (event.dataTransfer.files[0]) selectFile(event.dataTransfer.files[0]); });
 $('search').oninput = $('protocol').onchange = () => { page = 0; table(); };
+$('clear-filter').onclick = () => { $('search').value = ''; $('protocol').value = ''; page=0; table(); };
 $('prev').onclick = () => { page--; table(); };
 $('next').onclick = () => { page++; table(); };
 $('export').onclick = () => {
