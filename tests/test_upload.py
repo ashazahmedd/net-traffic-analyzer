@@ -47,3 +47,12 @@ def test_dns_ports_and_size_statistics():
     assert result['packets'][0]['destinationPort']==53
     empty=analyze(capture([]))
     assert empty['packetSizes']=={'min':0,'max':0,'average':0} and empty['activePorts']==[]
+
+def test_repository_sample_is_safe_and_matches_served_copy():
+    canonical=Path('samples/sample.pcap').read_bytes()
+    assert canonical==Path('public/sample.pcap').read_bytes()
+    assert len(canonical)<20_000
+    result=analyze(canonical)
+    assert result['count']==120
+    assert result['protocols']=={'DNS':30,'ICMP':5,'TCP':80,'UDP':5}
+    assert all(p['source'].startswith('198.51.100.') and p['destination'].startswith('203.0.113.') for p in result['packets'])

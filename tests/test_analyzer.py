@@ -5,7 +5,7 @@ from analyzer import analyze
 
 class AnalyzerTests(unittest.TestCase):
     def setUp(self):
-        self.data=Path('public/sample.pcap').read_bytes()
+        self.data=Path('samples/sample.pcap').read_bytes()
 
     def test_sample_totals(self):
         result=analyze(self.data)
