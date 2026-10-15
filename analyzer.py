@@ -8,6 +8,7 @@ from scapy.all import PcapReader, IP, IPv6, TCP, UDP, ICMP, ARP, DNS
 from scapy.error import Scapy_Exception
 from capture_format import records, MAX_UPLOAD
 from security import cleartext_signals, summarize_security
+from payloads import preview_payload, MAX_PREVIEW_PACKETS
 
 MAX_PACKETS = 100_000
 
@@ -24,6 +25,7 @@ def analyze(data):
         metadata.append((ts, size))
     rows = []
     tcp_rows = []
+    payload_previews = {}
     try:
         with PcapReader(BytesIO(data)) as reader:
             for i, packet in enumerate(reader):
@@ -51,6 +53,10 @@ def analyze(data):
                 rows.append(dict(number=i+1, time=ts, source=src, destination=dst,
                                  sourcePort=sport, destinationPort=dport,
                                  protocol=protocol, transportProtocol=transport_protocol, length=size))
+                if i < MAX_PREVIEW_PACKETS:
+                    layer = transport if transport is not None else packet.getlayer(ICMP)
+                    preview_bytes = bytes(layer.payload) if layer is not None else b''
+                    payload_previews[str(i+1)] = preview_payload(preview_bytes, len(packet.original))
                 if ip and packet.haslayer(TCP):
                     tcp_rows.append(dict(rows[-1], tcpFlags=int(tcp.flags), payloadLength=len(payload),
                                          cleartextSignals=signals))
@@ -62,7 +68,7 @@ def analyze(data):
     frame = pd.DataFrame(rows, columns=columns)
     if frame.empty:
         return dict(count=0, bytes=0, duration=0, hosts=0, protocols={}, timeline=[0]*40,
-                    packets=[], topHosts=[], connections=[], flowCount=0, topPorts=[], activePorts=[], packetSizes=dict(min=0, max=0, average=0), start=0, **summarize_security([], 0))
+                    packets=[], topHosts=[], connections=[], flowCount=0, topPorts=[], activePorts=[], packetSizes=dict(min=0, max=0, average=0), payloadPreviews={}, start=0, **summarize_security([], 0))
     start = float(frame.time.min())
     duration = float(frame.time.max() - start)
     timeline_index = ((frame.time-start)/duration*39).astype(int).clip(0,39) if duration else pd.Series(0,index=frame.index)
@@ -85,7 +91,7 @@ def analyze(data):
     packets['time'] = (packets.time-start).round(6)
     return dict(count=len(frame), bytes=int(frame.length.sum()), duration=duration,
                 hosts=len(host_bytes), protocols={str(k):int(v) for k,v in frame.groupby('protocol').size().items()},
-                timeline=timeline, packets=json.loads(packets.to_json(orient='records')),
+                payloadPreviews=payload_previews, timeline=timeline, packets=json.loads(packets.to_json(orient='records')),
                 topHosts=[dict(address=str(h),bytes=int(n)) for h,n in host_bytes.head(8).items()],
                 connections=connections, flowCount=flow_count,
                 topPorts=[dict(port=int(p),count=int(n)) for p,n in ports.items()],
