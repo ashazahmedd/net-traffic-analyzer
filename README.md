@@ -1,56 +1,66 @@
 # net-traffic-analyzer: PacketPulse
 
-PacketPulse is a Python web application for offline PCAP and PCAPNG traffic analytics. No capture devices, root privileges, databases, or Python dependencies are required.
+PacketPulse analyzes offline `.pcap` and `.pcapng` captures in a responsive web dashboard. Upload a file to inspect packet counts, transfer volume, IP hosts, protocols, conversations, destination ports, and activity over time. No live capture or root privileges are required.
+
+## Stack
+
+- **Flask:** root `app.py` exposes `app = Flask(__name__)` for Vercel's WSGI Python runtime.
+- **Scapy:** `PcapReader` reads captures from `BytesIO` and dissects IP, IPv6, TCP, UDP, ICMP, and ARP layers.
+- **Pandas:** aggregates protocol counts, host volume, conversations, time bins, and destination-port usage.
+- **HTML5 and Tailwind CSS via CDN:** responsive dashboard, with custom CSS for its visual theme.
+- **Chart.js:** interactive traffic timeline, protocol doughnut, and destination-port bar chart with hover tooltips.
+- **Pytest:** parser and Flask API regression tests.
 
 ## Run locally
 
-From the repository root:
+Use Python 3.12 (the deployment version):
 
 ```sh
-python3 server.py
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python app.py
 ```
 
-Open http://localhost:8000. A generated sample capture loads automatically. Upload your own capture using the file picker or drag and drop.
+Open http://localhost:8000. A 120-packet synthetic sample loads automatically. Use the file picker or drag and drop to analyze your own capture. Packet and connection tables support search, protocol filters, and pagination. Export the analysis as JSON.
 
-## Features
+To run tests:
 
-- Packet totals, original packet byte volume, unique IP hosts, capture duration
-- Packet activity timeline and transport/network protocol distribution
-- Top hosts by sent plus received bytes, bidirectional conversations and ports
-- Searchable, protocol-filtered packet and conversation tables with pagination
-- JSON report download
-- In-memory parsing, no retained uploads, no external packet processing services
+```sh
+pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+Regenerate the sample with `python samples/generate.py`.
 
 ## Deploy on Vercel
 
-Import this repository in Vercel. Use framework preset **Other** and keep the project root at the repository root. `vercel.json` sets the static output directory to `public`; `api/analyze.py` is the Python serverless function. No build command or environment variables are needed. Python 3.12 is specified in `.python-version`.
+Import `ashazahmedd/net-traffic-analyzer` into Vercel, selecting the implementation branch until it is merged. Use the repository root as the project root and the **Flask** framework preset. Remove any previous static output-directory override (`public`) and leave the build command unset. Dependencies are installed from `requirements.txt`; `.python-version` specifies Python 3.12. No environment variables are required.
 
-The upload is sent directly as an octet-stream request to `/api/analyze`. A 4,000,000-byte application limit leaves room under Vercel's 4.5 MB request limit. Processing is bounded to 100,000 packets. There are no persistent writes.
+Vercel detects the root-level `app.py` Flask instance. `vercel.json` configures that function with a 30-second maximum duration. Files in `public/` are served by the Vercel CDN; Flask serves the same files for local development. The page is served at `/`; uploads go to `/api/analyze`.
 
-Official references: [Python runtime](https://vercel.com/docs/functions/runtimes/python), [Function limits](https://vercel.com/docs/functions/limitations).
+References: [Vercel Flask deployment](https://vercel.com/docs/frameworks/backend/flask), [Python runtime](https://vercel.com/docs/functions/runtimes/python), [Function limits](https://vercel.com/docs/functions/limitations).
 
-## Parsing scope and limits
+## API
 
-Classic PCAP supports both byte orders and microsecond/nanosecond timestamps. PCAPNG supports multiple sections, interface descriptions, enhanced packet blocks, and per-interface timestamp resolution/offset. Legacy/simple PCAPNG packet blocks return an explicit unsupported-format error.
+```sh
+curl -X POST http://localhost:8000/api/analyze \
+  -H 'Content-Type: application/octet-stream' \
+  --data-binary @public/sample.pcap
+```
 
-Decoding covers Ethernet (including VLAN tags), raw IP, and Linux cooked v1; IPv4, base IPv6, ARP, TCP, UDP, ICMP, and ICMPv6. IPv6 extension chains are not decoded. Unsupported link types are counted as Unsupported. Noninitial IPv4 fragments are counted separately. Encrypted contents are not decrypted, application protocols are not inferred from ports, and this is not a full Wireshark replacement.
+Returns summary metrics, protocol counts, 40 timeline bins, packet rows, top hosts, conversations, and top destination ports. Invalid captures return JSON with HTTP 400, unsupported request content types HTTP 415, and oversized uploads HTTP 413. API responses use `Cache-Control: no-store`.
 
-Summary totals cover the complete accepted capture. Packet rows and JSON packet details are limited to the first 1,500 packets; conversations to the top 100; hosts to the top eight. Host byte volume counts both endpoints. Packet bytes use original on-wire lengths recorded by the capture. Conversations are grouped by unordered IP/port endpoints and protocol, without TCP session tracking. Packet table time is relative to the earliest timestamp.
+## Scope and limits
 
-The sample contains 120 synthetic packets and is intended only for UI demonstration. No uploaded file content is logged or stored by the application. Hosting-provider request metadata logging is outside application control.
+- Upload limit: 4,000,000 bytes, below Vercel's 4.5 MB request-body limit. Packet limit: 100,000.
+- Files are processed in memory and never saved. The app never calls Scapy's live capture, send, or interface-access functions.
+- `capture_format.py` checks binary framing before Scapy reads the file, preventing silent acceptance of truncated records. Supports classic PCAP byte orders and microsecond/nanosecond timestamps; PCAPNG sections, interfaces, enhanced packet blocks, and timestamp resolution/offset options. Legacy/simple PCAPNG packet blocks return an explicit error.
+- Summary totals cover the full accepted capture. Packet details are limited to the first 1,500, conversations to the top 100, host details to the top eight, and destination ports to the top ten. Counts and detail limits are shown in the UI.
+- Packet byte volume uses the original on-wire lengths recorded in the capture. Host volume includes sent and received bytes. Conversations group unordered IP/port endpoints plus protocol, without TCP session tracking. Packet times are relative to the earliest capture timestamp.
+- Protocol charts classify network/transport layers; application protocols such as DNS or HTTP are not inferred from port numbers. Destination ports are shown separately. This app does not decrypt payloads or reassemble streams.
+- CDN-hosted Tailwind, Chart.js, and fonts require browser internet access. Packet contents are sent only to the application's analysis endpoint, not to those CDNs. Hosting request-metadata logging is outside application control.
 
 ## Verification
 
-Verified locally: sample analytics, PCAPNG little/big endian parsing, malformed/truncated file rejection, HTTP upload-to-JSON response, and static page delivery. Browser visual verification and deployed Vercel verification remain unconfirmed.
-
-## Implementation choices
-
-This implementation uses Python’s standard library for its serverless endpoint and bounded packet parser, with HTML/CSS/JavaScript and SVG charts. This replaces the originally proposed Flask/Scapy/Pandas/Tailwind/Chart.js stack to keep the demo dependency-free. Protocol labels describe network/transport protocols, rather than inferring DNS or HTTP from port numbers.
-
-Run the regression tests from the repository root:
-
-```sh
-python3 -m unittest discover -s tests -v
-```
-
-Regenerate the synthetic sample with `python3 samples/generate.py`.
+Eight tests pass locally, covering sample totals, both PCAPNG byte orders, malformed/truncated captures, size bounds, Scapy IPv4/IPv6 and transport-layer extraction, Pandas grouping, Flask uploads/static assets/error responses, and empty captures. JavaScript syntax validation passed. Browser verification confirmed the sample renders with Chart.js and packet search filters results. Local tests used Python 3.9; Vercel Python 3.12 deployment has not yet been verified.

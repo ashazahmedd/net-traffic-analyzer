@@ -1,1 +1,1 @@
-{"outputDirectory":"public","functions":{"api/analyze.py":{"maxDuration":30}}}
+{"$schema":"https://openapi.vercel.sh/vercel.json","functions":{"app.py":{"maxDuration":30}}}
