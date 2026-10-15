@@ -1,17 +1,170 @@
-# net-traffic-analyzer: Network Traffic Analyzer
+# net-traffic-analyzer · PacketPulse
 
-PacketPulse is a Python-based web application designed to analyze and visualize offline network traffic from packet capture files (`.pcap` / `.pcapng`). Built to connect networking concepts with full-stack web development, PacketPulse provides an intuitive web interface for inspecting packet data without requiring live capture privileges or raw terminal tools.
+An offline packet-capture dashboard built with Python, Flask, Scapy, Pandas, Tailwind CSS, and Chart.js.
 
-### What Problem It Solves
-Analyzing raw packet captures usually requires desktop software like Wireshark or command-line tools like `tcpdump`, which can be overwhelming for fast high-level reporting or quick protocol inspection. PacketPulse simplifies this by allowing developers and network engineering students to upload sample capture files and immediately view summarized traffic metrics, protocol breakdowns, and port usage distributions through an interactive dashboard.
+## Problem Solved
 
-### Key Features
-* **Offline PCAP Analysis:** Safely upload and inspect `.pcap` files without needing root privileges or live interface access.
-* **Traffic Summary Metrics:** Instant insight into total packet count, data volume, unique IP addresses, and average packet size.
-* **Protocol & Port Distribution:** Interactive visual charts mapping protocol usage (TCP, UDP, ICMP, DNS, HTTP) and top destination ports.
-* **Sample File Included:** Pre-loaded with a test packet capture file in `/samples` for out-of-the-box demonstration.
+Network students and engineers often need a quick way to inspect packet behavior without configuring a live capture session or learning a full desktop analysis workflow. PacketPulse turns a pre-captured `.pcap` or `.pcapng` file into a readable traffic summary: which protocols appear, which IP addresses communicate, which ports receive traffic, and how packet sizes vary.
 
-### Technical Stack
-* **Backend:** Python, Flask, Scapy, Pandas
-* **Frontend:** HTML5, Tailwind CSS, Chart.js
-* **Testing:** Pytest
+Offline analysis avoids opening capture interfaces, requiring administrative/root privileges, or collecting unrelated live traffic. Users can practice with the included synthetic capture or review their own captures. Uploaded files are parsed in memory and never saved by the application.
+
+## What Was Built
+
+PacketPulse is a single-page Flask/Scapy application structured for Vercel's Python WSGI runtime. The deployment target is Vercel; a live deployment has not yet been verified.
+
+```text
+File picker / drag and drop → Analyze Traffic → POST /upload
+    → filename and binary validation → Scapy PcapReader(BytesIO)
+    → Pandas aggregation → JSON → dashboard cards, charts, and table
+```
+
+| Component | Responsibility |
+| --- | --- |
+| `app.py` | Exposes `app = Flask(__name__)`; handles multipart uploads, raw API requests, validation errors, and local static delivery. |
+| `capture_format.py` | Validates PCAP/PCAPNG record framing before dissection. |
+| `analyzer.py` | Uses Scapy for packet layers and Pandas for protocol, host, port, conversation, and size metrics. |
+| `public/` | HTML5/Tailwind CDN dashboard, custom theme, Chart.js, and the public demo capture. |
+| `samples/` | Canonical safe sample capture and its offline generator. |
+| `tests/` | Pytest coverage for upload validation, parsing, aggregation, and sample integrity. |
+| `vercel.json` | Function duration and development-file bundle exclusions. |
+
+The dashboard provides:
+
+- Drag-and-drop/file selection followed by **Analyze Traffic**, plus **Try sample capture** for immediate results.
+- **Total Packets**, **Unique IPs**, **Detected Protocols**, and **Average Packet Size** summary cards.
+- Side-by-side protocol-distribution doughnut and top-destination-port bar charts, stacked on mobile.
+- A searchable, protocol-filtered, paginated packet table with Index, Protocol, Source IP, Destination IP, destination Port, and Size.
+- JSON export containing totals, active ports, min/max/average packet sizes, host rankings, conversation metrics, and timeline bins.
+
+### Safe sample capture
+
+[`samples/sample.pcap`](samples/sample.pcap) contains **120 synthetic packets in 9,074 bytes**: 80 TCP, 30 DNS, 5 ICMP, and 5 other UDP packets. It uses documentation-only IP ranges (`198.51.100.0/24` and `203.0.113.0/24`), synthetic MAC addresses, and `example.invalid` DNS queries. It contains no captured user data, credentials, or live network traffic.
+
+An identical copy at `public/sample.pcap` lets Vercel serve the dashboard demo from its CDN. The generator writes both copies without sending or capturing packets:
+
+```sh
+python samples/generate.py
+```
+
+A regression test checks that the copies match, remain small, and decode to the expected synthetic traffic.
+
+## Technical Challenge
+
+The main hurdle was accepting useful captures within a serverless function's request and memory constraints while including Scapy and Pandas.
+
+**Multipart uploads can silently write to disk.** Werkzeug normally spools larger file uploads to temporary files. A custom Flask request class returns `BytesIO` streams instead. A test submits a file above the default spooling threshold and verifies its stream remains in memory.
+
+**File size, response size, and dependency bundle size are separate limits.** Capture contents are capped at **4,000,000 bytes**, with **65,536 bytes** of multipart overhead allowed. The request cap stays below Vercel's 4.5 MB request-body boundary. A **100,000-packet** ceiling bounds row processing; response packet details are limited to the first 1,500, conversations to the top 100, host rankings to eight, and destination ports to ten. Pandas computes summary totals over the complete accepted capture, rather than only the visible rows.
+
+Scapy and Pandas increase dependency size and cold-start work. `requirements.txt` contains only runtime dependencies; pytest is installed separately through `requirements-dev.txt`. `vercel.json` excludes tests, virtual environments, sample-generation files, caches, and development documentation from the Python function bundle. The small browser demo stays in `public/`. These measures reduce bundle contents; the final Linux bundle size and cold-start performance must still be checked in an actual Vercel build. The standard Python function bundle limit is 500 MB uncompressed. [Vercel Flask documentation](https://vercel.com/docs/frameworks/backend/flask), [Function limits](https://vercel.com/docs/functions/limitations).
+
+**Truncated captures must not look successful.** Scapy can finish reading some incomplete captures without reporting all framing issues. The binary validator runs first, and tests confirm malformed and truncated records return errors instead of partial success.
+
+## Setup & Deployment
+
+### 1. Clone the GitHub repository
+
+```sh
+git clone https://github.com/ashazahmedd/net-traffic-analyzer.git
+cd net-traffic-analyzer
+```
+
+Until [PR #1](https://github.com/ashazahmedd/net-traffic-analyzer/pull/1) is merged, switch to its implementation branch before continuing:
+
+```sh
+git switch --track origin/codex/offline-traffic-analyzer
+```
+
+After the PR is merged, use `main` normally.
+
+### 2. Install Python dependencies and run tests
+
+Python 3.12 is configured for deployment in `.python-version`.
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+On Windows, activate with `.venv\Scripts\activate` instead. For runtime dependencies alone, install `requirements.txt`.
+
+The **12 tests** in `tests/` cover upload filename/content validation, missing/duplicate files, empty and oversized captures, in-memory streams, malformed binary records, PCAPNG byte orders, Scapy packet extraction, Pandas grouping, DNS, ports, size statistics, static assets, and the safe sample fixture.
+
+### 3. Test locally with Vercel
+
+Install Node.js LTS and the Vercel CLI, then authenticate and link the checkout to the intended `net-traffic-analyzer` project:
+
+```sh
+npm install -g vercel
+vercel login
+vercel link
+vercel dev
+```
+
+When linking, choose the correct account/team and the existing `net-traffic-analyzer` project if it has already been imported. Open the local URL printed by `vercel dev`. Follow [Vercel's local development guide](https://vercel.com/docs/cli/dev).
+
+For a Python-only local preview:
+
+```sh
+python app.py
+```
+
+Open http://localhost:8000. The synthetic sample loads automatically; select another capture and click **Analyze Traffic** to test the upload flow.
+
+### 4. Connect GitHub and deploy to Vercel
+
+1. In Vercel, choose **Add New → Project** and import [`ashazahmedd/net-traffic-analyzer`](https://github.com/ashazahmedd/net-traffic-analyzer).
+2. Use the repository root and the **Flask** framework preset. Leave the build command and output-directory overrides unset. No environment variables are required.
+3. Deploy. Vercel detects the root-level `app.py` WSGI instance, installs runtime dependencies, and serves `public/` assets from its CDN. `vercel.json` configures the function for 30 seconds and excludes development files. Flask handles `/`, `/upload`, and `/api/analyze` without legacy catch-all rewrites.
+4. Review the implementation branch's preview deployment, then merge PR #1 into `main`. Configure `main` as the project's production branch.
+5. Subsequent commits pushed to `main` trigger production deployments; feature branches receive preview deployments through the GitHub integration.
+
+For example, from `main`, after committing a change:
+
+```sh
+git push origin main
+```
+
+For an explicit CLI production deployment from the intended linked project:
+
+```sh
+vercel project inspect --non-interactive
+vercel --prod
+```
+
+Confirm the inspected project and team match the target before deploying. [Flask deployment guide](https://vercel.com/docs/frameworks/backend/flask), [GitHub deployment integration](https://vercel.com/docs/git/vercel-for-github).
+
+After deployment, test the sample button and a valid upload, check that invalid/oversized uploads produce errors, and inspect build logs for the final bundle size. Local pytest results do not verify a hosted deployment.
+
+### API reference
+
+Multipart upload:
+
+```sh
+curl -X POST http://localhost:8000/upload \
+  -F 'file=@samples/sample.pcap'
+```
+
+Raw capture endpoint retained for API clients:
+
+```sh
+curl -X POST http://localhost:8000/api/analyze \
+  -H 'Content-Type: application/octet-stream' \
+  --data-binary @samples/sample.pcap
+```
+
+`/upload` requires exactly one multipart `file` field with a case-insensitive `.pcap` or `.pcapng` extension. Both endpoints validate binary contents. Invalid input returns JSON with HTTP 400; unsupported content types return 415; oversized uploads return 413. Responses use `Cache-Control: no-store`.
+
+### Analysis scope
+
+Classic PCAP supports both byte orders and microsecond/nanosecond timestamps. PCAPNG supports sections, interfaces, enhanced packet blocks, and timestamp resolution/offset options. Legacy/simple packet blocks return an explicit unsupported-format error.
+
+Protocol categories use Scapy's decoded DNS layer first, followed by transport/network layers. HTTP is not classified; encrypted payloads are not decrypted and streams are not reassembled. Packet volume and size statistics use original on-wire lengths from capture metadata. Host volume includes both endpoints, and conversations group unordered IP/port pairs plus protocol without TCP session tracking.
+
+CDN-hosted styles, charts, and fonts require browser internet access. Packet contents go only to this application's analysis endpoint. Hosting-provider request-metadata logging is outside application control.
+
+### Verification status
+
+All 12 tests pass locally. JavaScript syntax checks and browser checks of chart rendering, staged file selection, explicit upload analysis, and packet search passed. Local Python tests used Python 3.9. `vercel dev`, the configured Python 3.12 deployment, and final hosted bundle size have not yet been verified.
