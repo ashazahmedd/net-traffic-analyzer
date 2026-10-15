@@ -7,6 +7,7 @@ import pandas as pd
 from scapy.all import PcapReader, IP, IPv6, TCP, UDP, ICMP, ARP, DNS
 from scapy.error import Scapy_Exception
 from capture_format import records, MAX_UPLOAD
+from security import cleartext_signals, summarize_security
 
 MAX_PACKETS = 100_000
 
@@ -22,6 +23,7 @@ def analyze(data):
             raise ValueError('Invalid packet timestamp.')
         metadata.append((ts, size))
     rows = []
+    tcp_rows = []
     try:
         with PcapReader(BytesIO(data)) as reader:
             for i, packet in enumerate(reader):
@@ -44,6 +46,11 @@ def analyze(data):
                 rows.append(dict(number=i+1, time=ts, source=src, destination=dst,
                                  sourcePort=sport, destinationPort=dport,
                                  protocol=protocol, length=size))
+                if ip and packet.haslayer(TCP):
+                    tcp = packet[TCP]
+                    payload = bytes(tcp.payload)
+                    tcp_rows.append(dict(rows[-1], tcpFlags=int(tcp.flags), payloadLength=len(payload),
+                                         cleartextSignals=cleartext_signals(payload[:512], sport, dport)))
     except (Scapy_Exception, EOFError, OSError, StructError) as exc:
         raise ValueError('Scapy could not read this capture. Check its format and integrity.') from exc
     if len(rows) != len(metadata):
@@ -52,7 +59,7 @@ def analyze(data):
     frame = pd.DataFrame(rows, columns=columns)
     if frame.empty:
         return dict(count=0, bytes=0, duration=0, hosts=0, protocols={}, timeline=[0]*40,
-                    packets=[], topHosts=[], connections=[], flowCount=0, topPorts=[], activePorts=[], packetSizes=dict(min=0, max=0, average=0), start=0)
+                    packets=[], topHosts=[], connections=[], flowCount=0, topPorts=[], activePorts=[], packetSizes=dict(min=0, max=0, average=0), start=0, **summarize_security([], 0))
     start = float(frame.time.min())
     duration = float(frame.time.max() - start)
     timeline_index = ((frame.time-start)/duration*39).astype(int).clip(0,39) if duration else pd.Series(0,index=frame.index)
@@ -81,4 +88,5 @@ def analyze(data):
                 topPorts=[dict(port=int(p),count=int(n)) for p,n in ports.items()],
                 activePorts=sorted({int(p) for p in pd.concat([frame.sourcePort, frame.destinationPort]) if p > 0}),
                 packetSizes=dict(min=int(frame.length.min()), max=int(frame.length.max()),
-                                 average=round(float(frame.length.mean()), 2)), start=start)
+                                 average=round(float(frame.length.mean()), 2)), start=start,
+                **summarize_security(tcp_rows, start))
