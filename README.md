@@ -8,7 +8,7 @@ PacketPulse analyzes offline `.pcap` and `.pcapng` captures in a responsive web 
 - **Scapy:** `PcapReader` reads captures from `BytesIO` and dissects IP, IPv6, TCP, UDP, ICMP, ARP, and DNS layers.
 - **Pandas:** aggregates protocol counts, host volume, conversations, time bins, and destination-port usage.
 - **HTML5 and Tailwind CSS via CDN:** responsive dashboard, with custom CSS for its visual theme.
-- **Chart.js:** interactive traffic timeline, protocol doughnut, and destination-port bar chart with hover tooltips.
+- **Chart.js:** side-by-side protocol doughnut and destination-port bar chart with hover tooltips.
 - **Pytest:** parser and Flask API regression tests.
 
 ## Run locally
@@ -22,7 +22,7 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Open http://localhost:8000. A 120-packet synthetic sample loads automatically. Use the file picker or drag and drop to analyze your own capture. Packet and connection tables support search, protocol filters, and pagination. Export the analysis as JSON.
+Open http://localhost:8000. A 120-packet synthetic sample loads automatically. Use the file picker or drag and drop to select your own capture, then click **Analyze Traffic**. **Try sample capture** loads and analyzes the bundled sample immediately. The four summary cards show **Total Packets**, **Unique IPs**, **Detected Protocols**, and **Average Packet Size**. Below them are side-by-side protocol and destination-port charts (stacked on mobile). The searchable packet table shows **Index**, **Protocol**, **Source IP**, **Destination IP**, **Port** (destination), and **Size**, with protocol filtering and pagination. Export the full analysis response as JSON.
 
 To run tests:
 
@@ -72,4 +72,4 @@ Returns summary metrics, protocol counts, 40 timeline bins, packet rows, top hos
 
 ## Verification
 
-Eleven tests pass locally, covering sample totals, both PCAPNG byte orders, malformed/truncated captures, size bounds, Scapy IPv4/IPv6 and transport-layer extraction, Pandas grouping, Flask uploads/static assets/error responses, empty captures, multipart filename/content validation, memory-only upload streams, DNS, active ports, and packet-size statistics. JavaScript syntax validation passed. Browser verification confirmed the sample renders with Chart.js and packet search filters results. Local tests used Python 3.9; Vercel Python 3.12 deployment has not yet been verified.
+Eleven tests pass locally, covering sample totals, both PCAPNG byte orders, malformed/truncated captures, size bounds, Scapy IPv4/IPv6 and transport-layer extraction, Pandas grouping, Flask uploads/static assets/error responses, empty captures, multipart filename/content validation, memory-only upload streams, DNS, active ports, and packet-size statistics. JavaScript syntax validation passed. Browser verification confirmed the redesigned charts, file selection staging, explicit Analyze Traffic action, successful multipart upload, and packet search. Local tests used Python 3.9; Vercel Python 3.12 deployment has not yet been verified.

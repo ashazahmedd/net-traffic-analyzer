@@ -1,24 +1,162 @@
-const $=id=>document.getElementById(id),colors=['#a7cf78','#9db7cf','#c4aed4','#e1c28e','#c6d0bd'];let report=null,view='overview',page=0,busy=false,name='';
-const fmt=n=>n.toLocaleString(),bytes=n=>n>=1e6?(n/1e6).toFixed(2)+' MB':n>=1e3?(n/1e3).toFixed(1)+' KB':n+' B',esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let charts=[];
-function renderCharts(r,protocols){
-  charts.forEach(chart=>chart.destroy()); charts=[];
-  if(typeof Chart==='undefined'){
-    $('message').textContent='Chart.js could not load from the CDN. Packet analytics remain available.';
+const $ = id => document.getElementById(id);
+const colors = ['#a7cf78', '#9db7cf', '#c4aed4', '#e1c28e', '#c6d0bd'];
+const fmt = n => n.toLocaleString();
+const bytes = n => n >= 1e6 ? (n / 1e6).toFixed(2) + ' MB' : n >= 1e3 ? (n / 1e3).toFixed(1) + ' KB' : n + ' B';
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
+let report = null, page = 0, busy = false, name = '', selectedFile = null, selectedSample = false;
+let charts = [];
+
+function updateControls() {
+  $('upload').disabled = busy || !selectedFile;
+  $('upload').textContent = busy ? 'Analyzing…' : 'Analyze Traffic';
+  $('demo').disabled = busy;
+  $('browse').disabled = busy;
+  $('file').disabled = busy;
+  $('export').disabled = busy || !report;
+  $('drop').setAttribute('aria-busy', String(busy));
+}
+
+function selectFile(file, sample = false) {
+  if (busy) return false;
+  selectedFile = null;
+  selectedSample = false;
+  let error = !/\.(pcap|pcapng)$/i.test(file.name) ? 'Choose a .pcap or .pcapng capture.' :
+    file.size > 4000000 ? 'This demo supports captures up to 4 MB.' :
+    file.size === 0 ? 'This file is empty. Choose a packet capture.' : '';
+  $('message').textContent = error;
+  $('selected-file').textContent = error ? 'Choose a capture to analyze.' : `${file.name} · ${bytes(file.size)} · Ready to analyze`;
+  if (!error) { selectedFile = file; selectedSample = sample; }
+  $('file').value = '';
+  updateControls();
+  return !error;
+}
+
+function renderCharts(protocols) {
+  charts.forEach(chart => chart.destroy());
+  charts = [];
+  if (typeof Chart === 'undefined') {
+    $('message').textContent = 'Charts could not load from the CDN. Summary metrics and packet rows are available.';
     return;
   }
-  const common={responsive:true,maintainAspectRatio:false,animation:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{color:'#98a18e',font:{size:9},maxTicksLimit:6}},y:{beginAtZero:true,grid:{color:'#edf0e8'},ticks:{color:'#98a18e',font:{size:9},precision:0}}}};
-  charts.push(new Chart($('timeline-chart'),{type:'line',data:{labels:r.timeline.map((_,i)=>(r.duration*i/39).toFixed(2)+'s'),datasets:[{label:'Packets',data:r.timeline,borderColor:'#94bc66',backgroundColor:'#b8db9233',borderWidth:2,fill:true,pointRadius:0,pointHitRadius:12,tension:.25}]},options:common}));
-  charts.push(new Chart($('protocol-chart'),{type:'doughnut',data:{labels:protocols.map(([p])=>p),datasets:[{data:protocols.map(([,n])=>n),backgroundColor:protocols.map((_,i)=>colors[i%5]),borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,animation:false,cutout:'70%',plugins:{legend:{display:false}}}}));
-  charts.push(new Chart($('port-chart'),{type:'bar',data:{labels:r.topPorts.map(p=>String(p.port)),datasets:[{label:'Packets',data:r.topPorts.map(p=>p.count),backgroundColor:'#a7cf78',borderRadius:4,maxBarThickness:40}]},options:common}));
+  charts.push(new Chart($('protocol-chart'), {
+    type: 'doughnut',
+    data: {labels: protocols.map(([p]) => p), datasets: [{data: protocols.map(([,n]) => n), backgroundColor: protocols.map((_,i) => colors[i % colors.length]), borderWidth: 2}]},
+    options: {responsive: true, maintainAspectRatio: false, animation: false, cutout: '70%', plugins: {legend: {display: false}}}
+  }));
+  charts.push(new Chart($('port-chart'), {
+    type: 'bar',
+    data: {labels: report.topPorts.map(p => String(p.port)), datasets: [{label: 'Packets', data: report.topPorts.map(p => p.count), backgroundColor: '#a7cf78', borderRadius: 4, maxBarThickness: 42}]},
+    options: {responsive: true, maintainAspectRatio: false, animation: false, plugins: {legend: {display: false}},
+      scales: {x: {title: {display: true, text: 'Destination port', color: '#87927f', font: {size: 10}}, grid: {display: false}, ticks: {color: '#87927f', font: {size: 10}}},
+        y: {beginAtZero: true, grid: {color: '#edf0e8'}, ticks: {precision: 0, color: '#87927f', font: {size: 10}}}}}
+  }));
 }
-function render(){let r=report;$('stats').innerHTML=[['Total packets',fmt(r.count),'Packets in this capture','▤'],['Total traffic',bytes(r.bytes),'Original packet bytes','⇅'],['Unique hosts',fmt(r.hosts),'Distinct IP addresses','♧'],['Capture duration',r.duration.toFixed(2)+' s','From first to last packet','◷']].map(([label,value,note,icon])=>`<div class="stat"><div class="stat-label">${label}<span class="stat-icon">${icon}</span></div><strong>${value}</strong><small><span>●</span> &nbsp;${note}</small></div>`).join('');let protocols=Object.entries(r.protocols).sort((a,b)=>b[1]-a[1]);
-renderCharts(r,protocols);
-$('chart-duration').textContent=r.duration.toFixed(2)+' seconds';
-$('protocol-count').textContent=protocols.length;
-$('legend').innerHTML=protocols.map(([p,n],i)=>`<div class="legend-item"><i style="background:${colors[i%5]}"></i><span>${esc(p)}</span><b>${(n/r.count*100).toFixed(1)}%</b></div>`).join('');
-$('hosts').innerHTML=r.topHosts.length?r.topHosts.slice(0,5).map((h,i)=>`<div class="host"><span class="host-num">0${i+1}</span><span class="host-address">${esc(h.address)}</span><span class="bar-track"><i style="width:${h.bytes/r.topHosts[0].bytes*100}%"></i></span><b>${bytes(h.bytes)}</b></div>`).join(''):'<p style="padding:10px 22px">No IP hosts decoded.</p>';$('insights').innerHTML=[['Dominant protocol',protocols[0]?.[0]||'None'],['Conversations',fmt(r.flowCount)],['Smallest packet',bytes(r.packetSizes.min)],['Largest packet',bytes(r.packetSizes.max)],['Average packet size',bytes(r.packetSizes.average)],['Active ports',fmt(r.activePorts.length)]].map(([a,b])=>`<div class="insight"><span>${a}</span><strong>${b}</strong></div>`).join('');$('protocol').innerHTML='<option value="">All protocols</option>'+protocols.map(([p])=>`<option>${esc(p)}</option>`).join('');$('filename').textContent=name;$('capture-meta').textContent=fmt(r.count)+' packets · '+bytes(r.bytes);page=0;table();}
-function table(){if(!report)return;let connection=view==='connections',all=connection?report.connections:report.packets,query=$('search').value.trim().toLowerCase(),protocol=$('protocol').value;let filtered=all.filter(p=>(!protocol||p.protocol===protocol)&&(!query||[p.source,p.destination,p.sourcePort,p.destinationPort,p.protocol].join(' ').toLowerCase().includes(query)));let pages=Math.max(1,Math.ceil(filtered.length/8));page=Math.min(page,pages-1);$('table-title').textContent=connection?'Connections':'Packet explorer';$('table-subtitle').textContent=connection?'Bidirectional conversations, ranked by traffic volume':'A closer look at the individual packets';$('thead').innerHTML='<tr>'+ (connection?['SOURCE / PORT','DESTINATION / PORT','PROTOCOL','VOLUME']:['NO.','TIME (S)','SOURCE','DESTINATION','PROTOCOL','LENGTH']).map(t=>`<th>${t}</th>`).join('')+'</tr>';$('rows').innerHTML=filtered.slice(page*8,page*8+8).map(p=>'<tr>'+(connection?[`${esc(p.source)}:${p.sourcePort}`,`${esc(p.destination)}:${p.destinationPort}`,`<span class="tag ${esc(p.protocol)}">${esc(p.protocol)}</span>`,bytes(p.bytes)]:[p.number,p.time.toFixed(6),esc(p.source),esc(p.destination),`<span class="tag ${esc(p.protocol)}">${esc(p.protocol)}</span>`,p.length+' B']).map(v=>`<td>${v}</td>`).join('')+'</tr>').join('')||'<tr><td colspan="6">No matching results.</td></tr>';$('shown').textContent=fmt(filtered.length)+' '+(connection?'CONVERSATIONS':'PACKETS');$('result-count').textContent=`Showing ${filtered.length? page*8+1:0}–${Math.min(page*8+8,filtered.length)} of ${fmt(filtered.length)}${connection?' (top 100)':' (first 1,500 packets)'}`;$('page').textContent=`${page+1} / ${pages}`;$('prev').disabled=page===0;$('next').disabled=page>=pages-1;}
-async function parse(file,sample=false){if(busy)return;if(!sample&&!/\.(pcap|pcapng)$/i.test(file.name)){$('message').textContent='Choose a .pcap or .pcapng capture.';return}if(file.size>4000000){$('message').textContent='This demo supports captures up to 4 MB.';return}busy=true;$('upload').disabled=true;$('upload').textContent='Analyzing…';$('message').textContent='';try{let res=await fetch('/upload',{method:'POST',body:(()=>{const form=new FormData();form.append('file',file,sample?'office-network.pcap':file.name);return form})()});let data=await res.json();if(!res.ok)throw Error(data.error||'Unable to parse capture.');report=data;name=sample?'office-network.pcap':file.name;$('sample').hidden=!sample;render()}catch(e){$('message').textContent=e.message||'Analysis failed. Try another capture.'}finally{busy=false;$('upload').disabled=false;$('upload').textContent='↥  Upload capture';$('file').value=''}}
-async function demo(){try{const res=await fetch('/sample.pcap');if(!res.ok)throw Error('Sample unavailable');await parse(await res.blob(),true)}catch(e){$('message').textContent=e.message}}
-$('upload').onclick=$('browse').onclick=()=>$('file').click();$('file').onchange=e=>{if(e.target.files[0])parse(e.target.files[0])};$('demo').onclick=demo;['dragenter','dragover'].forEach(t=>$('drop').addEventListener(t,e=>{e.preventDefault();$('drop').classList.add('drag')}));['dragleave','drop'].forEach(t=>$('drop').addEventListener(t,e=>{e.preventDefault();$('drop').classList.remove('drag')}));$('drop').addEventListener('drop',e=>{if(e.dataTransfer.files[0])parse(e.dataTransfer.files[0])});$('search').oninput=$('protocol').onchange=()=>{page=0;table()};$('prev').onclick=()=>{page--;table()};$('next').onclick=()=>{page++;table()};document.querySelectorAll('.nav').forEach(b=>b.onclick=()=>{view=b.dataset.view;document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n===b));$('overview').hidden=view!=='overview';if(view==='overview')requestAnimationFrame(()=>charts.forEach(c=>c.resize()));$('stats').hidden=view!=='overview';$('crumb').textContent=b.textContent.trim().slice(1).trim();$('title').innerHTML=(view==='overview'?'Traffic overview':view==='packets'?'Packet explorer':'Connections')+'<span class="lime">.</span>';page=0;table()});$('export').onclick=()=>{if(!report)return;let url=URL.createObjectURL(new Blob([JSON.stringify({filename:name,...report},null,2)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=name.replace(/\.[^.]+$/,'')+'-report.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};demo();
+
+function render() {
+  const protocols = Object.entries(report.protocols).sort((a,b) => b[1] - a[1]);
+  $('stats').innerHTML = [
+    ['Total Packets', fmt(report.count), 'Packets in this capture', '▤'],
+    ['Unique IPs', fmt(report.hosts), 'Distinct IP addresses', '♧'],
+    ['Detected Protocols', fmt(protocols.length), 'Decoded protocol types', '◉'],
+    ['Average Packet Size', bytes(report.packetSizes.average), 'Mean original packet length', '⇅']
+  ].map(([label,value,note,icon]) => `<div class="stat"><div class="stat-label">${label}<span class="stat-icon" aria-hidden="true">${icon}</span></div><strong>${value}</strong><small><span>●</span> &nbsp;${note}</small></div>`).join('');
+  $('protocol-count').textContent = protocols.length;
+  $('legend').innerHTML = protocols.map(([p,n],i) => `<div class="legend-item"><i style="background:${colors[i % colors.length]}"></i><span>${esc(p)}</span><b>${(n / (report.count || 1) * 100).toFixed(1)}%</b></div>`).join('') || '<p>No packets in capture.</p>';
+  renderCharts(protocols);
+  $('protocol').innerHTML = '<option value="">All protocols</option>' + protocols.map(([p]) => `<option>${esc(p)}</option>`).join('');
+  $('filename').textContent = name;
+  $('capture-meta').textContent = `${fmt(report.count)} packets · ${bytes(report.bytes)} · ${report.duration.toFixed(2)} s`;
+  $('search').value = '';
+  page = 0;
+  table();
+}
+
+function table() {
+  if (!report) return;
+  const query = $('search').value.trim().toLowerCase(), protocol = $('protocol').value;
+  const filtered = report.packets.filter(p => (!protocol || p.protocol === protocol) && (!query ||
+    [p.number, p.source, p.destination, p.sourcePort, p.destinationPort, p.protocol, p.length].join(' ').toLowerCase().includes(query)));
+  const pages = Math.max(1, Math.ceil(filtered.length / 8));
+  page = Math.min(page, pages - 1);
+  $('thead').innerHTML = '<tr>' + ['Index', 'Protocol', 'Source IP', 'Destination IP', 'Port', 'Size'].map(t => `<th scope="col">${t}</th>`).join('') + '</tr>';
+  $('rows').innerHTML = filtered.slice(page * 8, page * 8 + 8).map(p => '<tr>' + [
+    p.number, `<span class="tag ${esc(p.protocol)}">${esc(p.protocol)}</span>`, esc(p.source), esc(p.destination),
+    p.destinationPort || '—', bytes(p.length)
+  ].map(v => `<td>${v}</td>`).join('') + '</tr>').join('') || '<tr><td colspan="6">No matching packets.</td></tr>';
+  $('shown').textContent = fmt(filtered.length) + ' PACKETS';
+  $('result-count').textContent = `Showing ${filtered.length ? page * 8 + 1 : 0}–${Math.min(page * 8 + 8, filtered.length)} of ${fmt(filtered.length)}${report.count > report.packets.length ? ' · first 1,500 packets indexed' : ''}`;
+  $('page').textContent = `${page + 1} / ${pages}`;
+  $('prev').disabled = page === 0;
+  $('next').disabled = page >= pages - 1;
+}
+
+async function analyzeSelected() {
+  if (busy || !selectedFile) return;
+  busy = true;
+  updateControls();
+  $('message').textContent = '';
+  try {
+    const form = new FormData();
+    form.append('file', selectedFile, selectedFile.name);
+    const response = await fetch('/upload', {method: 'POST', body: form});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Unable to analyze this capture.');
+    report = data;
+    name = selectedFile.name;
+    $('sample').hidden = !selectedSample;
+    render();
+    $('selected-file').textContent = `${name} · Analysis complete`;
+  } catch (error) {
+    $('message').textContent = error.message || 'Analysis failed. Try another capture.';
+  } finally {
+    busy = false;
+    updateControls();
+  }
+}
+
+async function demo() {
+  if (busy) return;
+  busy = true;
+  updateControls();
+  $('message').textContent = '';
+  try {
+    const response = await fetch('/sample.pcap');
+    if (!response.ok) throw new Error('Sample capture unavailable. Try uploading a file.');
+    const file = new File([await response.blob()], 'office-network.pcap', {type: 'application/octet-stream'});
+    busy = false;
+    if (selectFile(file, true)) await analyzeSelected();
+  } catch (error) {
+    $('message').textContent = error.message;
+  } finally {
+    busy = false;
+    updateControls();
+  }
+}
+
+$('browse').onclick = () => $('file').click();
+$('upload').onclick = analyzeSelected;
+$('file').onchange = event => { if (event.target.files[0]) selectFile(event.target.files[0]); };
+$('demo').onclick = demo;
+['dragenter', 'dragover'].forEach(type => $('drop').addEventListener(type, event => {
+  event.preventDefault();
+  if (!busy) $('drop').classList.add('drag');
+}));
+['dragleave', 'drop'].forEach(type => $('drop').addEventListener(type, event => {
+  event.preventDefault();
+  $('drop').classList.remove('drag');
+}));
+$('drop').addEventListener('drop', event => { if (event.dataTransfer.files[0]) selectFile(event.dataTransfer.files[0]); });
+$('search').oninput = $('protocol').onchange = () => { page = 0; table(); };
+$('prev').onclick = () => { page--; table(); };
+$('next').onclick = () => { page++; table(); };
+$('export').onclick = () => {
+  if (!report) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify({filename: name, ...report}, null, 2)], {type: 'application/json'}));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name.replace(/\.[^.]+$/, '') + '-report.json';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+updateControls();
+demo();
